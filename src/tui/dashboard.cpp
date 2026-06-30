@@ -297,10 +297,23 @@ void Dashboard::run() {
     g_screen = nullptr;
 }
 
-std::string Dashboard::snapshot(int width, int height, int settle_ms) {
+std::string Dashboard::snapshot(int tab, int width, int height, int settle_ms) {
     // Let the (already running) telemetry source populate the caches.
     if (settle_ms > 0)
         std::this_thread::sleep_for(std::chrono::milliseconds(settle_ms));
+    tab_ = tab;
+    // The attention tab needs a layer pinned; pick the first one that has
+    // attention data so the heatmap renders instead of the empty state.
+    if (tab == 1) {
+        auto nodes = tui::topology_nodes(model_);
+        for (int i = 0; i < static_cast<int>(nodes.size()); ++i) {
+            if (ring_.latest_attention(nodes[i])) {
+                topo_idx_ = i;
+                select_topology_node();
+                break;
+            }
+        }
+    }
     auto screen = Screen::Create(Dimension::Fixed(width), Dimension::Fixed(height));
     Element frame = build_ui();
     Render(screen, frame);

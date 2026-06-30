@@ -79,9 +79,10 @@ Element render_topology(const ModelInfo& model, int selected_idx,
     Elements items;
     items.push_back(text("Model: " + model.name) | bold | color(Color::Green));
     items.push_back(hbox({text("layers ") | dim, text(std::to_string(model.layers)),
-                          text("  hidden ") | dim, text(std::to_string(model.hidden_size)),
                           text("  heads ") | dim, text(std::to_string(model.num_heads))}));
-    items.push_back(hbox({text("quant ") | dim, text(model.quantization) | color(Color::Yellow)}));
+    items.push_back(hbox({text("hidden ") | dim, text(std::to_string(model.hidden_size)),
+                          text("  quant ") | dim,
+                          text(model.quantization) | color(Color::Yellow)}));
     items.push_back(separator());
 
     auto nodes = topology_nodes(model);

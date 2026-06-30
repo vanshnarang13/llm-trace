@@ -37,6 +37,7 @@ int main(int argc, char** argv) {
     bool sim = false;
     bool headless = false;
     bool snapshot = false;
+    int snapshot_tab = 0;
     int port = 5005;
 
     for (int i = 1; i < argc; ++i) {
@@ -45,6 +46,9 @@ int main(int argc, char** argv) {
         else if (arg == "--sim") sim = true;
         else if (arg == "--headless") headless = true;
         else if (arg == "--snapshot") { snapshot = true; sim = true; }
+        else if (arg == "--snapshot-tab" && i + 1 < argc) {
+            snapshot = true; sim = true; snapshot_tab = std::atoi(argv[++i]);
+        }
         else if (arg == "--port" && i + 1 < argc) port = std::atoi(argv[++i]);
         else { std::cerr << "unknown option: " << arg << "\n"; usage(); return 1; }
     }
@@ -63,7 +67,8 @@ int main(int argc, char** argv) {
     MockTracer tracer(bus, *device);
 
     server.start();
-    if (sim) tracer.start();
+    // Subscribers must be attached before any telemetry source starts, since
+    // model_info is sent only once: a late subscriber would miss the topology.
 
     if (headless) {
         // The dashboard normally wires these consumers; do it manually here.
@@ -72,7 +77,8 @@ int main(int argc, char** argv) {
             agg.process_event(e);
             anomaly.process_event(e);
         });
-        std::cout << "headless mode — telemetry on tcp/" << port
+        if (sim) tracer.start();
+        std::cout << "headless mode, telemetry on tcp/" << port
                   << ", Ctrl+C to stop\n";
         while (server.is_running()) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -84,9 +90,11 @@ int main(int argc, char** argv) {
     } else if (snapshot) {
         // Render one populated frame to stdout, then exit. For docs/CI.
         Dashboard dash(bus, ring, agg, anomaly, *device, server, tracer);
-        std::cout << dash.snapshot() << std::endl;
+        if (sim) tracer.start();
+        std::cout << dash.snapshot(snapshot_tab) << std::endl;
     } else {
         Dashboard dash(bus, ring, agg, anomaly, *device, server, tracer);
+        if (sim) tracer.start();
         dash.run();
     }
 

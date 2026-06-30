@@ -27,10 +27,11 @@ public:
 
     void run();
 
-    // Render a single dashboard frame to a fixed-size off-screen buffer and
-    // return it as a string (ANSI-colored). Lets telemetry settle for
+    // Render a single frame of the given tab to a fixed-size off-screen buffer
+    // and return it as a string (ANSI-colored). Lets telemetry settle for
     // settle_ms first so the panels are populated. Used for docs/CI snapshots.
-    std::string snapshot(int width = 150, int height = 48, int settle_ms = 1500);
+    std::string snapshot(int tab = 0, int width = 150, int height = 44,
+                         int settle_ms = 1500);
 
 private:
     ftxui::Element build_ui();  // builds the full frame from current state

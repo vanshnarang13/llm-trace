@@ -11,6 +11,48 @@ for the interface. A Python script attaches PyTorch hooks to any HuggingFace
 model and streams the data over TCP. There is also a built in simulator so you
 can try the UI without setting up a model first.
 
+## Features
+
+* **Non invasive instrumentation.** PyTorch forward hooks attach to a live model
+  and read its intermediate state. The model source is never edited and the raw
+  tensors never leave the model process, only compact summaries do.
+* **Model topology tree.** A live tree of the model (embeddings, transformer
+  layers, attention, mlp, norms, lm_head) with the layer currently being
+  captured highlighted.
+* **Live packet stream.** Every submodule forward pass shows up with its id,
+  timestamp, type, device and latency as tokens flow through.
+* **Latency profiling.** Rolling per layer averages and a flame style call tree
+  that makes it obvious which block dominates compute.
+* **Attention heatmap.** A pan and zoom view of the attention matrix, switchable
+  across heads, with a per head Shannon entropy readout.
+* **Runtime metrics inspector.** Tensor shape, dtype, byte size and the
+  activation statistics (mean, variance, min, max, sparsity) for any layer.
+* **Numerical anomaly ledger.** Flags NaN or Inf, exploding activations, dead
+  layers (near zero variance), high sparsity, and CUDA out of memory fallbacks
+  to the CPU.
+* **Token activation journey.** A stage by stage view of how one generated token
+  moves through the network.
+* **Bounded memory.** A fixed size ring buffer caps history so RAM stays flat no
+  matter how long inference runs. Large attention matrices are kept latest per
+  layer rather than every frame.
+* **Hardware monitor.** Live CPU and RAM, plus GPU where counters are available.
+* **Keyboard driven.** Vim style navigation, focus cycling, and a btop or
+  lazygit feel.
+* **Runs with no model.** A built in simulator drives the whole UI with realistic
+  synthetic telemetry, so nothing needs to be installed to evaluate it.
+* **Scriptable.** A headless mode prints rolling stats for CI or piping, and a
+  snapshot mode renders one frame to stdout for docs.
+
+## Where it fits
+
+Plenty of heavier tools cover parts of this, for example TensorBoard or Weights
+and Biases for training curves, Netron for static graph viewing, and
+OpenTelemetry or Jaeger for distributed tracing. llm-trace aims at a narrower
+spot: a single local binary, no account, no server, no database, that shows what
+a transformer is doing on your own machine in real time and inside the terminal.
+It speaks plain line delimited JSON over TCP, so any runtime that can open a
+socket can feed it, not just PyTorch.
+
 ## What it looks like
 
 Running `./build/llm-trace --sim`. In a real terminal the panels are colored
@@ -195,45 +237,99 @@ The pieces:
 
 The wire format lives in [docs/protocol.md](docs/protocol.md).
 
-## Building
+## The telemetry API
 
-You need CMake 3.16 or newer and a C++17 compiler. FTXUI and nlohmann/json are
-fetched automatically during configure.
+There is no database. State lives in memory in the ring buffer for the length of
+a session, which keeps the tool light and private. The one external interface is
+a TCP socket that accepts telemetry, so the "endpoints" here are the four event
+types a sender can post.
+
+* **Transport.** TCP on port `5005` by default (change with `--port`). Each
+  packet is one line of JSON followed by a newline. A bad line is skipped with a
+  warning and the connection stays open.
+* **`model_info`** registers the model once: name, layers, hidden size, heads,
+  vocab size, quantization.
+* **`layer_trace`** is sent after each submodule forward pass: layer name and
+  type, device, latency, input and output tensor metadata, and activation stats.
+* **`attention_weights`** carries the per head attention matrices for a layer.
+* **`anomaly`** lets a sender flag its own issue, for example a CUDA out of
+  memory fallback.
+
+You can test the socket by hand with anything that writes to it. For example:
+
+```sh
+./build/llm-trace --headless &                 # listen and print stats
+printf '%s\n' '{"event_type":"model_info","timestamp":0,"payload":{"name":"demo","layers":2,"hidden_size":8,"num_heads":2,"vocab_size":32,"quantization":"fp32"}}' | nc localhost 5005
+```
+
+The full field reference for every event is in
+[docs/protocol.md](docs/protocol.md).
+
+## Build
+
+Requirements:
+
+* A C++17 compiler (clang or gcc). Tested with Apple clang on macOS.
+* CMake 3.16 or newer.
+* An internet connection for the first configure, which fetches FTXUI and
+  nlohmann/json automatically. Later builds are offline.
+* Optional, only for real models: Python 3 with `torch` and `transformers`.
 
 ```sh
 cmake -B build
 cmake --build build -j
 ```
 
-## Running
+The binary is written to `build/llm-trace`.
 
-Try the UI straight away with the built in simulator. No Python needed.
+## Run and test
 
-```sh
-./build/llm-trace --sim
-```
-
-Or listen for a real model and stream telemetry into it from another shell.
+The fastest way to see everything working is the built in simulator. It needs
+nothing else installed.
 
 ```sh
-./build/llm-trace                                  # terminal 1
-python examples/hook.py --model gpt2 --steps 20    # terminal 2
+./build/llm-trace --sim     # press q to quit, Tab and 1 to 4 to move around
 ```
 
-Other flags: `--headless` prints rolling stats instead of drawing the UI, which
-is handy for piping or CI. `--snapshot` renders one populated frame and exits.
-`--port N` changes the TCP port. `--help` lists everything.
-
-### Real models
+To trace a real model, start the tool as a listener in one terminal and run the
+hook in another. The hook computes its statistics inside the model process and
+streams only summaries, so the raw tensors never leave that process.
 
 ```sh
-pip install torch transformers
-python examples/hook.py --model gpt2 --steps 30
+pip install torch transformers                     # one time
+./build/llm-trace                                  # terminal 1, listens on 5005
+python examples/hook.py --model gpt2 --steps 20    # terminal 2, streams telemetry
 ```
 
-`hook.py` registers forward hooks on the embedding, attention, MLP and norm
-modules. It computes the activation stats inside the model process, so the raw
-tensors never leave that process, and sends a compact summary to llm-trace.
+Modes and flags:
+
+| command                         | what it does                                  |
+|---------------------------------|-----------------------------------------------|
+| `./build/llm-trace --sim`       | full TUI driven by the synthetic simulator    |
+| `./build/llm-trace`             | full TUI, waits for a real sender on TCP 5005  |
+| `./build/llm-trace --headless`  | no UI, prints rolling stats, good for CI or piping |
+| `./build/llm-trace --snapshot`  | render one frame to stdout and exit (used for the screenshots above) |
+| `--snapshot-tab N`              | snapshot a specific tab, 0 to 3               |
+| `--port N`                      | change the TCP port                           |
+| `--help`                        | list everything                               |
+
+### Verify each feature
+
+A quick map from the things this project claims to do to where you can see them.
+Run `./build/llm-trace --sim` and then:
+
+| feature                         | where to look                                  |
+|---------------------------------|------------------------------------------------|
+| non invasive hooking            | `examples/hook.py`, no edits to the model      |
+| layer by layer latency          | Dashboard panel 6, and the Call Tree tab (key `3`) |
+| which block dominates compute   | Call Tree shows transformer blocks at about 99 percent, mlp heaviest |
+| attention matrix visualization  | Attention tab (key `2`), pan with `h j k l`, change head with `<` `>` |
+| tensor shape and dtype          | Runtime Metrics panel after selecting a layer  |
+| sparsity, mean, max             | Runtime Metrics panel, sparsity has a bar      |
+| numerical anomalies             | Anomaly Ledger panel, watch for exploding activations and OOM fallbacks |
+| fixed size ring buffer          | runs for hours with flat memory, see `src/storage/ring_buffer.cpp` |
+| Tab cycles focus, j and k move  | try them on the Dashboard tab                  |
+| the TCP API                     | `--headless` plus the `nc` example above       |
 
 ## Keys
 
@@ -259,3 +355,39 @@ tensors never leave that process, and sends a compact summary to llm-trace.
    entropy, next to a token by token view of the activations.
 3. **Call Tree** is a flame style breakdown of where inference time goes.
 4. **Help** is the key reference.
+
+## Assumptions and design notes
+
+* The simulator emulates a Llama 3 8B shaped model (32 layers, 4096 hidden, 32
+  heads) so the UI has realistic data to show without a GPU. The numbers are
+  synthetic but the shapes and flow match a real decoder.
+* The sender computes activation statistics, not the tool. This keeps the wire
+  small and means the raw weights stay inside the model process.
+* Attention matrices are downsampled by the sender for long contexts, and the
+  tool keeps only the latest matrix per layer to stay within memory.
+* GPU counters are read where a vendor library exposes them. On Apple silicon
+  there is no portable counter, so the GPU line reads unavailable while CPU and
+  RAM stay live. Devices reported by a sender, such as `CUDA:0`, are still shown
+  per layer.
+* One telemetry client at a time is assumed, which fits a single model run.
+* History is in memory only. There is no database and nothing is written to disk
+  except a small `llm-trace.log`.
+
+## Beyond the core brief
+
+A few things were added that go past the basic requirement and help with testing
+and verification:
+
+* A zero dependency simulator, so the whole tool can be evaluated without setting
+  up a model.
+* A headless mode that prints rolling stats, useful for CI or quick checks.
+* A snapshot mode that renders a single frame to stdout, which is how the
+  screenshots in this README were produced.
+* The flame style call tree and the per token activation journey, which are extra
+  views on top of the required panels.
+* Per head Shannon entropy on the attention view, as a quick read on how focused
+  or diffuse a head is.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

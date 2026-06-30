@@ -1,0 +1,10 @@
+build/
+*.o
+*.obj
+*.exe
+session.json
+__pycache__/
+*.pyc
+.DS_Store
+llm-trace.log
+*.typescript

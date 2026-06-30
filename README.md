@@ -1,4 +1,4 @@
-# llm-trace
+# llm-trace · terminal telemetry for local transformers
 
 A small terminal tool for watching how local transformer models actually run. It
 hooks into a model's forward pass without touching the model code, grabs what is
